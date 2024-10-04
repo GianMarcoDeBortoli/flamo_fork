@@ -444,6 +444,50 @@ def peak_filter(fc:torch.Tensor, gain:torch.Tensor, Q:torch.Tensor,  fs: int=480
 
     return b, a
 
+def complex_res_filter(f_res:torch.Tensor, gain:torch.Tensor, phase:torch.Tensor, t60:float, fs: int=48000):
+    r"""
+    Given a sampling rate, a resonance frequency and a reverberation
+    time, builds the corresponding complex first order resonance filter
+    returning its transfer function coefficients.
+
+        **Args**:
+            - f_res (torch.Tensor): The resonance frequency of the mode in Hz.
+            - gain (torch.Tensor): The magnitude peak values in dB.
+            - phase (torch.Tensor): The phase of the resonance.
+            - t60 (float): The reverberation time of the resonance in seconds.
+            - fs (int, optional): The sampling frequency of the signal in Hz. Defaults to 48000.
+
+        **Returns**:
+            - b (torch.Tensor): The numerator coefficients of the filter transfer function.
+            - a (torch.Tensor): The denominator coefficients of the filter transfer function
+    """
+
+    b = torch.zeros(2)
+    a = torch.zeros(3)
+    
+    # Normalized resonance
+    f_res_norm = 2*torch.pi*f_res/fs
+
+    # Pole radius
+    radius = db2mag(-60 / (t60 * fs))
+    # Pole
+    pole = radius * torch.exp(torch.view_as_complex(torch.tensor([0.0, f_res_norm])))
+
+    # Residue gain
+    g = (1 - radius) * db2mag(gain)
+    # Residue
+    residue = g * torch.exp(torch.view_as_complex(torch.tensor([0.0, phase])))
+    
+    # Rational transfer function coefficients
+    b[0] = 2*residue.real
+    b[1] = -2*torch.real(residue*torch.conj(pole))
+    a[0] = 1
+    a[1] = -2*pole.real
+    a[2] = torch.abs(pole)**2
+
+    return b, a
+    
+
 def sosfreqz(sos: torch.Tensor, nfft: int = 512):
     """
     Compute the complex frequency response via FFT of cascade of biquads
