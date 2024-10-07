@@ -290,8 +290,8 @@ def plot_spectrograms(y_1: torch.Tensor, y_2: torch.Tensor, fs: int, nfft: int=2
             - label2 (str, optional): Label for the second signal. Defaults to 'Optimized'.
             - title (str, optional): Title of the plot. Defaults to 'System Impulse Response Spectrograms'.
     """
-    Spec_init,f,t = mlab.specgram(y_1.detach().squeeze().numpy(), NFFT=nfft, Fs=fs, noverlap=nfft//8)
-    Spec_opt,_,_ = mlab.specgram(y_2.detach().squeeze().numpy(), NFFT=nfft, Fs=fs, noverlap=nfft//8)
+    Spec_init,f,t = mlab.specgram(y_1.detach().squeeze().numpy(), NFFT=nfft, Fs=fs, noverlap=nfft//8, pad_to=nfft*2)
+    Spec_opt,_,_ = mlab.specgram(y_2.detach().squeeze().numpy(), NFFT=nfft, Fs=fs, noverlap=nfft//8, pad_to=nfft*2)
 
     max_val = max(Spec_init.max(), Spec_opt.max())
     Spec_init = Spec_init/max_val
@@ -529,11 +529,11 @@ def example_AA(args) -> None:
     """
 
     # --------------------- Parameters ------------------------
-    samplerate = 500                  # Sampling frequency
-    nfft = 2**10                        # FFT size
+    samplerate = 1000                  # Sampling frequency
+    nfft = 2**12                        # FFT size
     microphones = 4                     # Number of microphones
     loudspeakers = 13                   # Number of loudspeakers
-    MR_n_modes = 100                     # Modal reverb number of modes
+    MR_n_modes = 150                     # Modal reverb number of modes
     MR_f_high = 480                   # Modal reverb highest mode frequency
     MR_t60 = 1.0                       # Modal reverb reverberation time
 
