@@ -444,7 +444,7 @@ def peak_filter(fc:torch.Tensor, gain:torch.Tensor, Q:torch.Tensor,  fs: int=480
 
     return b, a
 
-def complex_res_filter(f_res:torch.Tensor, gain:torch.Tensor, phase:torch.Tensor, t60:float, fs: int=48000):
+def resonance_filter(f_res:torch.Tensor, gain:torch.Tensor, phase:torch.Tensor, t60:float, fs: int=48000):
     r"""
     Given a sampling rate, a resonance frequency and a reverberation
     time, builds the corresponding complex first order resonance filter
@@ -462,8 +462,13 @@ def complex_res_filter(f_res:torch.Tensor, gain:torch.Tensor, phase:torch.Tensor
             - a (torch.Tensor): The denominator coefficients of the filter transfer function
     """
 
-    b = torch.zeros(2)
-    a = torch.zeros(3)
+    b = torch.zeros(2, *phase.shape[1:], len(f_res))
+    a = torch.zeros(3, *phase.shape[1:], len(f_res))
+
+    phase = phase.permute(*torch.roll(torch.arange(len(phase.shape)),-1)).unsqueeze(0)
+
+    f_res = f_res.view(-1, *(1,)*(len(phase.shape[1:]))).reshape(*(1,)*len(phase.shape[1:]), -1).expand(*phase.shape)
+    gain = gain.view(-1, *(1,)*(len(phase.shape[1:]))).reshape(*(1,)*len(phase.shape[1:]), -1).expand(*phase.shape)
     
     # Normalized resonance
     f_res_norm = 2*torch.pi*f_res/fs
@@ -471,12 +476,12 @@ def complex_res_filter(f_res:torch.Tensor, gain:torch.Tensor, phase:torch.Tensor
     # Pole radius
     radius = db2mag(-60 / (t60 * fs))
     # Pole
-    pole = radius * torch.exp(torch.view_as_complex(torch.tensor([0.0, f_res_norm])))
+    pole = radius * torch.exp(torch.complex(torch.zeros_like(f_res_norm), f_res_norm))
 
     # Residue gain
     g = (1 - radius) * db2mag(gain)
     # Residue
-    residue = g * torch.exp(torch.view_as_complex(torch.tensor([0.0, phase])))
+    residue = g * torch.exp(torch.complex(torch.zeros_like(phase), phase))
     
     # Rational transfer function coefficients
     b[0] = 2*residue.real

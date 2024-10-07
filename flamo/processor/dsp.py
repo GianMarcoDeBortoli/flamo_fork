@@ -7,7 +7,7 @@ from flamo.functional import (
     lowpass_filter, 
     highpass_filter, 
     bandpass_filter,
-    complex_res_filter,
+    resonance_filter,
     rad2hertz )
 from flamo.auxiliary.eq import (
     eq_freqs,
@@ -1828,12 +1828,12 @@ class ModalReverb(Filter):
         n_modes: int=10,
         f_high: int=500,
         t60: float=1.0,
-        requires_grad: bool = True,
-        alias_decay_db: float = 0.0,
+        requires_grad: bool=False,
+        alias_decay_db: float=0.0,
     ):
         self.fs = fs
         self.n_modes = n_modes
-        self.t60 = t60
+        self.t60 = torch.tensor(t60)
         self.freqs = torch.linspace(20, f_high, n_modes)
         self.gains = torch.zeros(n_modes)
         self.gamma = 10 ** (-torch.abs(torch.tensor(alias_decay_db)) / nfft / 20)
@@ -1848,22 +1848,30 @@ class ModalReverb(Filter):
         torch.nn.init.uniform_(self.param, a=0, b=2*torch.pi)
 
     def get_freq_response(self):
-        self.freq_response = torch.zeros((self.nfft//2+1, self.output_channels, self.input_channels), dtype=torch.complex64)
+        # self.freq_response = torch.zeros((self.nfft//2+1, self.output_channels, self.input_channels), dtype=torch.complex64)
 
-        for i in range(self.input_channels):
-            for j in range(self.output_channels):
-                for k in range(self.n_modes):
-                    b_k, a_k = complex_res_filter(f_res=self.freqs[k], gain=self.gains[k], phase=self.param[k,j,i], t60=self.t60, fs=self.fs)
-                    b_aa_k = torch.einsum('p, p -> p', (self.gamma ** torch.arange(0, 2, 1)), b_k)
-                    a_aa_k = torch.einsum('p, p -> p', (self.gamma ** torch.arange(0, 3, 1)), a_k)
-                    B_k = torch.fft.rfft(b_aa_k, self.nfft, dim=0)
-                    A_k = torch.fft.rfft(a_aa_k, self.nfft, dim=0)
-                    A_k[A_k == 0+1j*0] = torch.tensor(1e-12)
-                    self.freq_response[:,j,i] += B_k / A_k
+        b_k, a_k = resonance_filter(f_res=self.freqs, gain=self.gains, phase=self.param, t60=self.t60, fs=self.fs)
+        b_aa_k = torch.einsum('p, pijk -> pijk', (self.gamma ** torch.arange(0, 2, 1)), b_k)
+        a_aa_k = torch.einsum('p, pijk -> pijk', (self.gamma ** torch.arange(0, 3, 1)), a_k)
+        B_k = torch.fft.rfft(b_aa_k, self.nfft, dim=0)
+        A_k = torch.fft.rfft(a_aa_k, self.nfft, dim=0)
+        # A_k[A_k == 0+1j*0] = torch.tensor(1e-12)
+        self.freq_response = torch.div(B_k, A_k).sum(dim=-1)
 
         if torch.isnan(self.freq_response).any():
             print("Warning: NaN values in the frequency response. This is a common issue with high order, we are working on it. But please rise an issue on github if you encounter it. One thing that can help is to reduce the learning rate.")
 
+    def initialize_class(self):
+        r"""
+        Initialize the :class:`Biquad` class.
+        """
+        self.check_param_shape()
+        self.get_io()
+        self.freq_response = to_complex(
+            torch.empty((self.nfft // 2 + 1, *self.size[1:]))
+        )
+        self.get_freq_response()
+        self.get_freq_convolve()
 
 if __name__ == "__main__":
 
