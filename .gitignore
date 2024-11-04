@@ -5,3 +5,4 @@ dist/
 *.asv 
 /output
 test.py
+/test_in_reaper

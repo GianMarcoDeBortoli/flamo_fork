@@ -82,7 +82,7 @@ class AA(nn.Module):
         wgn_matrix = dsp.parallelFilter(size=wgn_rev.shape, nfft=self.nfft, alias_decay_db=alias_decay_db)
         wgn_matrix.assign_value(wgn_rev)
 
-        self.V_ML = OrderedDict([ ('U', fir_matrix), ('R', wgn_matrix) ])
+        self.V_ML = OrderedDict([ ('U', fir_matrix), ('R', wgn_matrix) ]) # 
 
         # Feedback loop
         self.F_MM = system.Shell(
@@ -159,10 +159,10 @@ class AA(nn.Module):
         r"""
         Set the system general gain to match the current system GBI in linear scale.
         """
-        # Compute the gain before instability
+        # Compute the current gain before instability
         gbi = self.get_current_GBI()
 
-        # Apply gbi to the module
+        # Apply the current gain before instability to the system general gain module
         self.set_G(gbi)
 
     # ------------------------------------------------------------------------------
@@ -251,7 +251,6 @@ class AA(nn.Module):
                 torch.Tensor: system impulse response.
         """
         with torch.no_grad():
-
             # Generate the paths
             nat_path, ea_path = self.__create_system()
             # Compute system response
@@ -369,35 +368,54 @@ class AA_RIRs(object):
         self.n_A = n_A
         self.fs = fs
         self.dir = dir
-        self.__RIRs = self.__load_rirs()
-        self.RIR_length = self.__RIRs.shape[0]
+        self.__RIRs, self.RIR_length = self.__load_rirs()
 
     def __load_rirs(self) -> torch.Tensor:
         r"""
         Give the directory, loads the corresponding RIRs.
 
             **Returns**:
-                torch.Tensor: RIRs. dtype=torch.float32, shape = (15000, n_M, n_L).
+                torch.Tensor: RIRs. dtype=torch.float32, shape = (RIRs_length, n_M, n_L).
         """
 
-        rirs = torch.zeros(15000, 5, 13)
+        rirs_length = 24000
 
-        lds_index = [1,2,3,5,6,7,8,9,10,11,12,13,14]
-        m = list(range(1,5+1))
-        l = lds_index[0:13]
+        src_to_aud = torch.zeros(rirs_length, self.n_A, self.n_S)
+        for i in range(self.n_A):
+            for j in range(self.n_S):
+                src_to_aud[:,i,j] = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_E{j+1:03d}.wav", channels_first=False)[0].squeeze()
 
-        for mcs in range(5):
-            for lds in range(13):
-                w, sr = torchaudio.load(f"{self.dir}/mic{m[mcs]}_speaker{l[lds]}.wav")
-                rirs[:,mcs,lds] = w[0,0:15000].squeeze()
+        src_to_sys = torch.zeros(rirs_length, self.n_M, self.n_S)
+        for i in range(self.n_M):
+            for j in range(self.n_S):
+                src_to_sys[:,i,j] = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_E{j+1:03d}.wav", channels_first=False)[0].squeeze()
 
-        if self.fs != sr:
-            rirs = torchaudio.transforms.Resample(sr, self.fs)(rirs)
+        sys_to_aud = torch.zeros(rirs_length, self.n_A, self.n_L)
+        for i in range(self.n_A):
+            for j in range(self.n_L):
+                sys_to_aud[:,i,j] = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_E{j+1:03d}.wav", channels_first=False)[0].squeeze()
 
-        rirs[:,1,:] = rirs[:,1,:] * db2mag(6)   # TODO: retake measurements, solve mic gain problems
-        rirs[:,3,:] = rirs[:,3,:] * db2mag(-2)
+        sys_to_sys = torch.zeros(rirs_length, self.n_M, self.n_L)
+        for i in range(self.n_M):
+            for j in range(self.n_L):
+                sys_to_sys[:,i,j] = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_E{j+1:03d}.wav", channels_first=False)[0].squeeze()
 
-        return rirs/(torch.norm(rirs, 'fro'))   # TODO: choose if and how to normalize
+        rirs = OrderedDict([
+            ('src_to_aud', src_to_aud),
+            ('src_to_sys', src_to_sys),
+            ('sys_to_aud', sys_to_aud),
+            ('sys_to_sys', sys_to_sys)
+        ])
+        return rirs, rirs_length
+    
+    def get_scs_to_aud(self) -> torch.Tensor:
+        r"""
+        Returns the sources to audience RIRs
+
+            **Returns**:
+                torch.Tensor: Sources to audience RIRs. shape = (15000, n_A, n_S).
+        """
+        return self.__RIRs['src_to_aud']
 
     def get_scs_to_mcs(self) -> torch.Tensor:
         r"""
@@ -406,16 +424,16 @@ class AA_RIRs(object):
             **Returns**:
                 torch.Tensor: Sources to microphones RIRs. shape = (15000, n_M, n_S).
         """
-        return self.__RIRs[:, 0:self.n_M, 2].unsqueeze(2)
-
-    def get_scs_to_aud(self) -> torch.Tensor:
+        return self.__RIRs['src_to_sys']
+    
+    def get_lds_to_aud(self) -> torch.Tensor:
         r"""
-        Returns the sources to audience RIRs
+        Returns the loudspeakers to audience RIRs
 
             **Returns**:
-                torch.Tensor: Sources to audience RIRs. shape = (15000, n_A, n_S).
+                torch.Tensor: Loudspeakers to audience RIRs. shape = (15000, n_A, n_L).
         """
-        return self.__RIRs[:, -1, 2].unsqueeze(1).unsqueeze(2)
+        return self.__RIRs['sys_to_aud']
 
     def get_lds_to_mcs(self) -> torch.Tensor:
         r"""
@@ -424,16 +442,7 @@ class AA_RIRs(object):
             **Returns**:
                 torch.Tensor: Loudspeakers to microphones RIRs. shape = (15000, n_M, n_L).
         """
-        return self.__RIRs[:, 0:self.n_M, 0:self.n_L]
-
-    def get_lds_to_aud(self) -> torch.Tensor:
-        r"""
-        Returns the loudspeakers to audience RIRs
-
-            **Returns**:
-                torch.Tensor: Loudspeakers to audience RIRs. shape = (15000, n_A, n_L).
-        """
-        return self.__RIRs[:, -1, 0:self.n_L].unsqueeze(1)
+        return self.__RIRs['sys_to_sys']
 
 
 class MSE_evs(nn.Module):
@@ -611,6 +620,12 @@ def example_AA(args) -> None:
     plot_spectrograms(ir_init, ir_opt, samplerate)
     plt.show()
 
+
+    test = system.Shell(model.V_ML)
+    irs = test.get_time_response(identity=True).squeeze(0)
+    to_save = torch.cat((irs[:2**16,:,0], irs[:2**16,:,1], irs[:2**16,:,2], irs[:2**16,:,3]), dim=0)
+    torchaudio.save('./fir_with_wgn.wav', to_save, channels_first=False, sample_rate=samplerate)
+
     return None
 
 
@@ -628,7 +643,7 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=float, default=0.8, help='split ratio for training and validation')
     #---------------------- Training ----------------------
     parser.add_argument('--train_dir', type=str, help='directory to save training results')
-    parser.add_argument('--max_epochs', type=int, default=20, help='maximum number of epochs')
+    parser.add_argument('--max_epochs', type=int, default=10, help='maximum number of epochs')
     parser.add_argument('--patience_delta', type=float, default=0.01, help='Minimum improvement in validation loss to be considered as an improvement')
     #---------------------- Optimizer ---------------------
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')

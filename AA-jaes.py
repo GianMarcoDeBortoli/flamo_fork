@@ -16,8 +16,7 @@ from flamo.functional import (
     db2mag,
     mag2db,
     get_magnitude,
-    get_eigenvalues,
-    WGN_reverb
+    get_eigenvalues
 )
 from flamo.optimize.dataset import DatasetColorless, load_dataset
 from flamo.optimize.trainer import Trainer
@@ -34,7 +33,7 @@ class AA_jaes(nn.Module):
         De Bortoli G., Prawda K., and Schlecht S. J.
         Active Acoustics with a Phase Cancelling Modal Reverberator
     """
-    def __init__(self, n_S: int, n_M: int, n_L: int, n_A: int, fs: int=48000, nfft: int=2**11, n_modes: int=10, mode_f_high: float=500, mode_t60: float=1.0, alias_decay_db: float=0):
+    def __init__(self, n_S: int, n_M: int, n_L: int, n_A: int, n_modes: int, lowest_mode_f: float, highest_mode_f: float, mode_t60: float, fs: int=48000, nfft: int=2**11, alias_decay_db: float=0):
         r"""
         Initialize the Active Acoustics (AA) model.
         Stores system parameters, RIRs, and filters.
@@ -44,10 +43,12 @@ class AA_jaes(nn.Module):
                 - n_M (int): number of microphones.
                 - n_L (int): number of loudspeakers.
                 - n_A (int): number of audience positions.
+                - n_modes (int): number of modes inside the modal reverberator.
+                - lowest_mode_f (float): frequency of the lowest mode inside the modal reverberator.
+                - highest_mode_f (float): frequency of the highest mode inside the modal reverberator.
+                - mode_t60 (float): reverberation time of the modes in the modal reverberator.
                 - fs (int, optional): sampling frequency. Defaults to 48000.
                 - nfft (int, optional): number of frequency bins. Defaults to 2**11.
-                - FIR_order (int, optional): order of the FIR filters. Defaults to 100.
-                - wgn_RT (float, optional): reverberation time of the WGN reverb. Defaults to 1.0.
                 - alias_decay_db (float, optional): Time-alias decay in dB. Defaults to 0.
         """
         nn.Module.__init__(self)
@@ -76,7 +77,7 @@ class AA_jaes(nn.Module):
         # Virtual room
         self.G = dsp.parallelGain(size=(self.n_L,), nfft=self.nfft, alias_decay_db=alias_decay_db)
         self.G.assign_value(torch.ones(self.n_L))
-        modal_reverb = dsp.ModalReverb(size=(self.n_L, self.n_M), nfft=self.nfft, fs=self.fs, n_modes=n_modes, f_high=mode_f_high, t60=mode_t60, requires_grad=True, alias_decay_db=alias_decay_db)
+        modal_reverb = dsp.ModalReverb(size=(self.n_L, self.n_M), nfft=self.nfft, fs=self.fs, n_modes=n_modes, f_low=lowest_mode_f, f_high=highest_mode_f, t60=mode_t60, requires_grad=True, alias_decay_db=alias_decay_db)
 
         self.V_ML = OrderedDict( [('MR', modal_reverb)] )
 
@@ -353,37 +354,69 @@ class AA_RIRs(object):
         self.n_A = n_A
         self.fs = fs
         self.dir = dir
-        self.__RIRs = self.__load_rirs()
-        self.RIR_length = self.__RIRs.shape[0]
+        self.__RIRs, self.RIR_length = self.__load_rirs()
 
     def __load_rirs(self) -> torch.Tensor:
         r"""
         Give the directory, loads the corresponding RIRs.
 
             **Returns**:
-                torch.Tensor: RIRs. dtype=torch.float32, shape = (15000, n_M, n_L).
+                torch.Tensor: RIRs. dtype=torch.float32, shape = (RIRs_length, n_M, n_L).
         """
 
-        rirs = torch.zeros(5,13,15000)
+        rirs_length = 24000 # Read this from dataset
+        sr = 48000          # Read this from dataset
+        new_rirs_length = int(self.fs * rirs_length/sr) # I should infer this from the resample
 
-        lds_index = [1,2,3,5,6,7,8,9,10,11,12,13,14]
-        m = list(range(1,5+1))
-        l = lds_index[0:13]
+        src_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_S)
+        for i in range(self.n_A):
+            for j in range(self.n_S):
+                w = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                if self.fs != sr:
+                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
+                src_to_aud[:,i,j] = w.permute(1,0).squeeze()
 
-        for mcs in range(5):
-            for lds in range(13):
-                w, sr = torchaudio.load(f"{self.dir}/mic{m[mcs]}_speaker{l[lds]}.wav")
-                rirs[mcs,lds,:] = w[0,0:15000].squeeze()
+        src_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_S)
+        for i in range(self.n_M):
+            for j in range(self.n_S):
+                w = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                if self.fs != sr:
+                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
+                src_to_sys[:,i,j] = w.permute(1,0).squeeze()
 
-        if self.fs != sr:
-            rirs = torchaudio.functional.resample(rirs, sr, self.fs)
+        sys_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_L)
+        for i in range(self.n_A):
+            for j in range(self.n_L):
+                w = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                if self.fs != sr:
+                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
+                sys_to_aud[:,i,j] = w.permute(1,0).squeeze()
 
-        rirs = rirs.permute(2,0,1)
+        sys_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_L)
+        for i in range(self.n_M):
+            for j in range(self.n_L):
+                w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                if self.fs != sr:
+                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
+                sys_to_sys[:,i,j] = w.permute(1,0).squeeze()
 
-        rirs[:,1,:] = rirs[:,1,:] * db2mag(6)   # TODO: retake measurements, solve mic gain problems
-        rirs[:,3,:] = rirs[:,3,:] * db2mag(-2)
+        rirs = OrderedDict([
+            ('src_to_aud', src_to_aud),
+            ('src_to_sys', src_to_sys),
+            ('sys_to_aud', sys_to_aud),
+            ('sys_to_sys', sys_to_sys)
+        ])
 
-        return rirs/(torch.norm(rirs, 'fro'))   # TODO: choose if and how to normalize
+        return rirs, new_rirs_length
+    
+    def get_scs_to_aud(self) -> torch.Tensor:
+        r"""
+        Returns the sources to audience RIRs
+
+            **Returns**:
+                torch.Tensor: Sources to audience RIRs. shape = (15000, n_A, n_S).
+        """
+        return self.__RIRs['src_to_aud']
 
     def get_scs_to_mcs(self) -> torch.Tensor:
         r"""
@@ -392,16 +425,16 @@ class AA_RIRs(object):
             **Returns**:
                 torch.Tensor: Sources to microphones RIRs. shape = (15000, n_M, n_S).
         """
-        return self.__RIRs[:, 0:self.n_M, 2].unsqueeze(2)
-
-    def get_scs_to_aud(self) -> torch.Tensor:
+        return self.__RIRs['src_to_sys']
+    
+    def get_lds_to_aud(self) -> torch.Tensor:
         r"""
-        Returns the sources to audience RIRs
+        Returns the loudspeakers to audience RIRs
 
             **Returns**:
-                torch.Tensor: Sources to audience RIRs. shape = (15000, n_A, n_S).
+                torch.Tensor: Loudspeakers to audience RIRs. shape = (15000, n_A, n_L).
         """
-        return self.__RIRs[:, -1, 2].unsqueeze(1).unsqueeze(2)
+        return self.__RIRs['sys_to_aud']
 
     def get_lds_to_mcs(self) -> torch.Tensor:
         r"""
@@ -410,20 +443,66 @@ class AA_RIRs(object):
             **Returns**:
                 torch.Tensor: Loudspeakers to microphones RIRs. shape = (15000, n_M, n_L).
         """
-        return self.__RIRs[:, 0:self.n_M, 0:self.n_L]
-
-    def get_lds_to_aud(self) -> torch.Tensor:
-        r"""
-        Returns the loudspeakers to audience RIRs
-
-            **Returns**:
-                torch.Tensor: Loudspeakers to audience RIRs. shape = (15000, n_A, n_L).
-        """
-        return self.__RIRs[:, -1, 0:self.n_L].unsqueeze(1)
+        return self.__RIRs['sys_to_sys']
 
 
-class minimize_evs(nn.Module):
-    def __init__(self, iter_num: int, freq_points: int):
+# class minimize_evs(nn.Module):
+#     def __init__(self, iter_num: int, freq_points_until_nyquist: int, nyquist_freq: int):
+#         r"""
+#         Mean Squared Error (MSE) loss function for Active Acoustics.
+#         To reduce computational complexity (i.e. the number of eigendecompositions computed),
+#         the loss is applied only on a subset of the frequecy points at each iteration of an epoch.
+#         The subset is selected randomly ensuring that all frequency points are considered once and only once.
+
+#             **Args**:
+#                 - iter_num (int): Number of iterations per epoch.
+#                 - freq_points (int): Number of frequency points.
+#         """
+#         super().__init__()
+
+#         self.iter_num = iter_num
+#         self.freq_points = freq_points_until_nyquist
+#         self.idxs = torch.randperm(self.freq_points)
+#         self.evs_per_iteration = torch.ceil(torch.tensor(self.freq_points / self.iter_num, dtype=torch.float))
+#         self.min_index = int(40 * self.freq_points / nyquist_freq)
+#         self.max_index = self.freq_points
+#         self.interval_count = 0
+
+#     def forward(self, y_pred, y_true):
+#         r"""
+#         Compute the MSE loss function.
+            
+#             **Args**:
+#                 - y_pred (torch.Tensor): Predicted eigenvalues.
+#                 - y_true (torch.Tensor): True eigenvalues.
+
+#             **Returns**:
+#                 torch.Tensor: Mean Squared Error.
+#         """
+#         # Get the indexes of the frequency-point subset
+#         idxs = self.__get_indexes()
+#         # Get the eigenvalues
+#         evs_pred = get_magnitude(get_eigenvalues(y_pred[:,idxs,:,:]))
+#         mse = torch.mean(torch.square(evs_pred - 0.0))
+#         return mse
+
+#     def __get_indexes(self):
+#         r"""
+#         Get the indexes of the frequency-point subset.
+
+#             **Returns**:
+#                 torch.Tensor: Indexes of the frequency-point subset.
+#         """
+#         # Compute indeces
+#         idx1 = np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1]) # np.max([self.min_index, np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1])])
+#         idx2 = np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index]) # np.max([self.min_index, np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index])])
+#         idxs = self.idxs[torch.arange(idx1, idx2, dtype=torch.int)]
+#         # Update interval counter
+#         self.interval_count = (self.interval_count+1) % (self.iter_num)
+#         return idxs
+    
+class minimize_evs_mod(nn.Module):
+    def __init__(self, iter_num: int, idxs: torch.Tensor):
         r"""
         Mean Squared Error (MSE) loss function for Active Acoustics.
         To reduce computational complexity (i.e. the number of eigendecompositions computed),
@@ -437,10 +516,7 @@ class minimize_evs(nn.Module):
         super().__init__()
 
         self.iter_num = iter_num
-        self.idxs = torch.randperm(freq_points)
-        self.evs_per_iteration = torch.ceil(torch.tensor(freq_points / self.iter_num, dtype=torch.float))
-        self.max_index = freq_points
-        self.interval_count = 0
+        self.idxs = idxs
 
     def forward(self, y_pred, y_true):
         r"""
@@ -453,32 +529,26 @@ class minimize_evs(nn.Module):
             **Returns**:
                 torch.Tensor: Mean Squared Error.
         """
-        # Get the indexes of the frequency-point subset
-        idxs = self.__get_indexes()
         # Get the eigenvalues
-        evs_pred = get_magnitude(get_eigenvalues(y_pred[:,idxs,:,:]))
-        mse = torch.mean(torch.square(evs_pred - 0.0))
+        evs_pred = get_magnitude(get_eigenvalues(y_pred[:,self.idxs,:,:]))
+        mse = torch.mean(torch.square(evs_pred))
         return mse
 
-    def __get_indexes(self):
-        r"""
-        Get the indexes of the frequency-point subset.
+# class preserve_reverb_energy(nn.Module):
+#     def __init__(self, freq_points_until_nyquist: int, nyquist_freq: int):
+#         super().__init__()
+#         self.low_lim = int(50 * freq_points_until_nyquist / nyquist_freq)
+#     def forward(self, y_pred, y_target, model):
+#         freq_response = model.F_MM._Shell__core.MR.freq_response
+#         return torch.mean(torch.pow(torch.abs(freq_response[self.low_lim:])-torch.abs(y_target.squeeze()[self.low_lim:]), 2))
 
-            **Returns**:
-                torch.Tensor: Indexes of the frequency-point subset.
-        """
-        # Compute indeces
-        idx1 = np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1])
-        idx2 = np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index])
-        idxs = self.idxs[torch.arange(idx1, idx2, dtype=torch.int)]
-        # Update interval counter
-        self.interval_count = (self.interval_count+1) % (self.iter_num)
-        return idxs
-    
-class preserve_reverb_energy(nn.Module):
+class preserve_reverb_energy_mod(nn.Module):
+    def __init__(self, idxs):
+        super().__init__()
+        self.idxs = idxs
     def forward(self, y_pred, y_target, model):
         freq_response = model.F_MM._Shell__core.MR.freq_response
-        return torch.mean(torch.pow(torch.abs(freq_response)-torch.abs(y_target.squeeze()), 2))
+        return torch.mean(torch.pow(torch.abs(freq_response[self.idxs])-torch.abs(y_target.squeeze()[self.idxs]), 2))
     
 def save_model_params(model: system.Shell, filename: str='parameters'):
     r"""
@@ -530,12 +600,18 @@ def example_AA(args) -> None:
 
     # --------------------- Parameters ------------------------
     samplerate = 1000                  # Sampling frequency
-    nfft = 2**12                        # FFT size
-    microphones = 4                     # Number of microphones
-    loudspeakers = 13                   # Number of loudspeakers
-    MR_n_modes = 150                     # Modal reverb number of modes
-    MR_f_high = 480                   # Modal reverb highest mode frequency
+    nfft = 2**11                       # FFT size
+    microphones = 4                    # Number of microphones
+    loudspeakers = 13                  # Number of loudspeakers
+    MR_n_modes = 150                   # Modal reverb number of modes
+    MR_f_low = 50                      # Modal reverb lowest mode frequency
+    MR_f_high = 480                    # Modal reverb highest mode frequency
     MR_t60 = 1.0                       # Modal reverb reverberation time
+
+    f_axis = torch.linspace(0, samplerate/2, nfft//2+1)
+    MR_freqs = torch.linspace(MR_f_low, MR_f_high, MR_n_modes)
+    idxs = torch.argmin(torch.abs(f_axis.unsqueeze(1) - MR_freqs.unsqueeze(0)), dim=0)
+    idxs = torch.cat((idxs-1, idxs, idxs+1), dim = 0)
 
     # ------------------- Model Definition --------------------
     model = AA_jaes(
@@ -543,11 +619,12 @@ def example_AA(args) -> None:
         n_M = microphones,
         n_L = loudspeakers,
         n_A = 1,
+        n_modes = MR_n_modes,
+        lowest_mode_f = MR_f_low,
+        highest_mode_f = MR_f_high,
+        mode_t60 = MR_t60,
         fs = samplerate,
         nfft = nfft,
-        n_modes = MR_n_modes,
-        mode_f_high = MR_f_high,
-        mode_t60 = MR_t60,
         alias_decay_db=0
     )
     
@@ -580,8 +657,8 @@ def example_AA(args) -> None:
         train_dir=args.train_dir,
         device=args.device
     )
-    trainer.register_criterion(minimize_evs(iter_num=args.num, freq_points=nfft//2+1), 0.5)
-    trainer.register_criterion(preserve_reverb_energy(), 0.5, requires_model=True)
+    trainer.register_criterion(minimize_evs_mod(iter_num=args.num, idxs=idxs), 1.5)
+    trainer.register_criterion(preserve_reverb_energy_mod(idxs), 1.0, requires_model=True)
     
     # ------------------- Train the model --------------------
     trainer.train(train_loader, valid_loader)
@@ -599,8 +676,8 @@ def example_AA(args) -> None:
     plot_spectrograms(ir_init, ir_opt, samplerate, nfft=2**4)
 
     MR = system.Shell(core=model.V_ML['MR'])
-    rirs = MR.get_time_response(fs=48000, identity=True)
-    frs = MR.get_freq_response(fs=48000, identity=True)
+    rirs = MR.get_time_response(fs=samplerate, identity=True)
+    frs = MR.get_freq_response(fs=samplerate, identity=True)
 
     plt.figure()
     for i in range(2):
@@ -616,8 +693,27 @@ def example_AA(args) -> None:
 
     plt.show()
 
+    test = system.Shell(model.V_ML)
+    irs = test.get_time_response(identity=True).squeeze(0)
+    irs_length_cut = int(MR_t60*samplerate)
+    irs = irs[:irs_length_cut,:,:]
+    irs_length = int(irs.shape[0]/samplerate * 48000)
+    irs_temp = torch.zeros(irs_length, irs.shape[1], irs.shape[2])
+    for i in range(irs.shape[1]):
+        for j in range(irs.shape[2]):
+            irs_temp[:,i,j] = torchaudio.transforms.Resample(samplerate, 48000)(irs[:,i,j].squeeze().unsqueeze(0))
+    new_irs_length = next_power_of_2(irs_length)
+    irs_final = torch.cat((irs_temp, torch.zeros(new_irs_length-irs_length, irs_temp.shape[1], irs_temp.shape[2])), dim=0)
+    to_save = torch.zeros(irs_final.shape[0]*irs_final.shape[2], irs_final.shape[1])
+    for i in range(irs_final.shape[2]):
+        to_save[i*irs_final.shape[0]:(i+1)*irs_final.shape[0],:] = irs_final[:,:,i]
+    torchaudio.save('./modalReverb.wav', to_save, channels_first=False, sample_rate=samplerate)
+
     return None
 
+
+def next_power_of_2(x):  
+    return 1 if x == 0 else 2**(x - 1).bit_length()
 
 ###########################################################################################
 

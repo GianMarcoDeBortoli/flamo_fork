@@ -1826,7 +1826,8 @@ class ModalReverb(Filter):
         nfft: int = 2**11,
         fs: int = 48000,
         n_modes: int=10,
-        f_high: int=500,
+        f_low: float=0,
+        f_high: float=500,
         t60: float=1.0,
         requires_grad: bool=False,
         alias_decay_db: float=0.0,
@@ -1834,7 +1835,7 @@ class ModalReverb(Filter):
         self.fs = fs
         self.n_modes = n_modes
         self.t60 = torch.tensor(t60)
-        self.freqs = torch.linspace(20, f_high, n_modes)
+        self.freqs = torch.linspace(f_low, f_high, n_modes)
         self.gains = torch.zeros(n_modes)
         self.gamma = 10 ** (-torch.abs(torch.tensor(alias_decay_db)) / nfft / 20)
         super().__init__(

@@ -662,7 +662,7 @@ def WGN_reverb(matrix_size: tuple=(1,1), t60: float=1.0, samplerate: int=48000) 
             torch.Tensor: Matrix of WGN-reverb impulse responses.
     """
     # Number of samples
-    n_samples = int(1.5 * t60 * samplerate)
+    n_samples = int(t60 * samplerate)
     # White Guassian Noise
     noise = torch.randn(n_samples, *matrix_size)
     # Decay
