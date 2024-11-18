@@ -17,9 +17,9 @@ from flamo.functional import (
     mag2db,
     get_magnitude,
     get_eigenvalues,
-    # WGN_reverb,
+    WGN_reverb
 )
-from flamo.optimize.dataset import DatasetColorless_mod, load_dataset
+from flamo.optimize.dataset import DatasetColorless, load_dataset
 from flamo.optimize.trainer import Trainer
 
 torch.manual_seed(130297)
@@ -261,7 +261,7 @@ class AA(nn.Module):
 
 # ============================================== Plots =============================================
 
-def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nfft: int, lower_f_lim: float, higher_f_lim: float, label1: str='Initialized', label2: str='Optimized') -> None:
+def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nfft: int, label1: str='Initialized', label2: str='Optimized') -> None:
     r"""
     Plot the magnitude distribution of the given eigenvalues.
 
@@ -273,8 +273,8 @@ def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nf
             label1 (str, optional): Label for the first set of eigenvalues. Defaults to 'Initialized'.
             label2 (str, optional): Label for the second set of eigenvalues. Defaults to 'Optimized'.
     """
-    idx1 = int(nfft/fs * lower_f_lim)
-    idx2 = int(nfft/fs * higher_f_lim)
+    idx1 = int(nfft/fs * 20)
+    idx2 = int(nfft/fs * 20000)
     evs = mag2db(torch.cat((evs_1.unsqueeze(-1), evs_2.unsqueeze(-1)), dim=len(evs_1.shape))[idx1:idx2,:,:])
     plt.rcParams.update({'font.family':'serif', 'font.size':20, 'font.weight':'heavy', 'text.usetex':True})
     plt.figure(figsize=(7,6))
@@ -289,7 +289,7 @@ def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nf
     plt.xticks([0,1], [label1, label2])
     plt.xticks(rotation=90)
     ax.yaxis.grid(True)
-    plt.title(f'Eigenvalue Magnitude Distribution\nbetween {lower_f_lim} Hz and {higher_f_lim} Hz')
+    plt.title('Eigenvalue Magnitude Distribution')
     plt.tight_layout()
 
 def plot_spectrograms(y_1: torch.Tensor, y_2: torch.Tensor, fs: int, nfft: int=2**10, label1='Initialized', label2='Optimized', title='System Impulse Response Spectrograms') -> None:
@@ -338,92 +338,6 @@ def plot_spectrograms(y_1: torch.Tensor, y_2: torch.Tensor, fs: int, nfft: int=2
     cbar.ax.set_ylim(-100, 0)
     cbar.ax.set_yticks(ticks, ['-100','-80','-60','-40','-20','0'])
 
-def plot_coupling(rirs):
-    norm_val = torch.norm(rirs, 'fro')
-
-    rms = torch.sqrt(torch.sum(torch.pow(rirs, 2), dim=(0))/rirs.shape[0])
-    plt.figure()
-    image = plt.imshow(rms)
-    plt.ylabel('Microphone')
-    plt.yticks(np.arange(0, rirs.shape[1]), labels=np.arange(1,rirs.shape[1]+1))
-    plt.xlabel('Loudspeaker')
-    plt.xticks(np.arange(0, rirs.shape[2]), labels=np.arange(1,rirs.shape[2]+1))
-    plt.colorbar(mappable=image)
-
-    # new_rirs = rirs/rms
-    # new_rirs = new_rirs/torch.norm(new_rirs, 'fro') * norm_val
-    # rms = torch.sqrt(torch.sum(torch.pow(new_rirs, 2), dim=(0))/rirs.shape[0])
-    # plt.figure()
-    # image = plt.imshow(rms)
-    # plt.ylabel('Microphone')
-    # plt.yticks(np.arange(0, rirs.shape[1]), labels=np.arange(1,rirs.shape[1]+1))
-    # plt.xlabel('Loudspeaker')
-    # plt.xticks(np.arange(0, rirs.shape[2]), labels=np.arange(1,rirs.shape[2]+1))
-    # plt.colorbar(mappable=image)
-    plt.show(block=True)
-
-def plot_stuff(samplerate, nfft, rtfs, fl_rtfs, evs):
-
-    f_axis = torch.linspace(0, samplerate//2, nfft//2+1)
-    rtfs_peak = torch.max(torch.max(torch.abs(rtfs), dim=2)[0], dim=1)[0]
-    rtfs_mean = torch.mean(torch.abs(rtfs), dim=(1,2))
-    rtfs_ptmr = rtfs_peak / rtfs_mean
-    if len(fl_rtfs.shape) < 3:
-        fl_rtfs = fl_rtfs.unsqueeze(-1)
-    fl_rtfs_peak = torch.max(torch.max(torch.abs(fl_rtfs), dim=2)[0], dim=1)[0]
-    fl_rtfs_mean = torch.mean(torch.abs(fl_rtfs), dim=(1,2))
-    fl_rtfs_ptmr = fl_rtfs_peak/fl_rtfs_mean
-    evs_peak = torch.max(torch.abs(evs), dim=1)[0]
-    evs_mean = torch.mean(torch.abs(evs), dim=1)
-    evs_ptmr = evs_peak/evs_mean
-
-    plt.figure()
-    plt.subplot(231)
-    plt.plot(f_axis, mag2db(rtfs_peak), label='Maximum')
-    plt.plot(f_axis, mag2db(rtfs_mean), label='Mean')
-    plt.ylim(-20,30)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.legend()
-    plt.title('Room transfer functions - magnitude')
-    plt.subplot(234)
-    plt.plot(f_axis, mag2db(rtfs_ptmr))
-    plt.ylim(-20,30)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.subplot(232)
-    plt.plot(f_axis, mag2db(fl_rtfs_peak))
-    plt.plot(f_axis, mag2db(fl_rtfs_mean))
-    plt.ylim(-50,0)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.title('Feedback-loop transfer functions - magnitude')
-    plt.subplot(235)
-    plt.plot(f_axis, mag2db(fl_rtfs_ptmr))
-    plt.ylim(-20,30)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.subplot(233)
-    plt.plot(f_axis, mag2db(evs_peak))
-    plt.plot(f_axis, mag2db(evs_mean))
-    plt.ylim(-50,0)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.title('Eigenvalues - magnitude')
-    plt.subplot(236)
-    plt.plot(f_axis, mag2db(evs_ptmr))
-    plt.ylim(-20,30)
-    plt.xlim(20,20000)
-    plt.xscale('log')
-    plt.grid()
-    plt.tight_layout()
-    plt.show(block=True)
-
 # ==================================================================================================
 # =========================================== Auxiliary ============================================
 
@@ -464,33 +378,33 @@ class AA_RIRs(object):
                 torch.Tensor: RIRs. dtype=torch.float32, shape = (RIRs_length, n_M, n_L).
         """
 
-        rirs_length = 288000 # Read this from dataset
+        rirs_length = 96000 # Read this from dataset
         sr = 96000          # Read this from dataset
         new_rirs_length = int(self.fs * rirs_length/sr) # I should infer this from the resample
 
         src_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_S)
-        for i in range(self.n_A):
-            for j in range(self.n_S):
-                w = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_S{j+1:03d}.wav")[0]
-                if self.fs != sr:
-                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
-                src_to_aud[:,i,j] = w.permute(1,0).squeeze()
+        # for i in range(self.n_A):
+        #     for j in range(self.n_S):
+        #         w = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+        #         if self.fs != sr:
+        #             w = torchaudio.transforms.Resample(sr, self.fs)(w)
+        #         src_to_aud[:,i,j] = w.permute(1,0).squeeze()
 
         src_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_S)
-        for i in range(self.n_M):
-            for j in range(self.n_S):
-                w = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
-                if self.fs != sr:
-                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
-                src_to_sys[:,i,j] = w.permute(1,0).squeeze()
+        # for i in range(self.n_M):
+        #     for j in range(self.n_S):
+        #         w = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_E{j+1:03d}.wav")[0]
+        #         if self.fs != sr:
+        #             w = torchaudio.transforms.Resample(sr, self.fs)(w)
+        #         src_to_sys[:,i,j] = w.permute(1,0).squeeze()
 
         sys_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_L)
-        for i in range(self.n_A):
-            for j in range(self.n_L):
-                w = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_S{j+1:03d}.wav")[0]
-                if self.fs != sr:
-                    w = torchaudio.transforms.Resample(sr, self.fs)(w)
-                sys_to_aud[:,i,j] = w.permute(1,0).squeeze()
+        # for i in range(self.n_A):
+        #     for j in range(self.n_L):
+        #         w = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+        #         if self.fs != sr:
+        #             w = torchaudio.transforms.Resample(sr, self.fs)(w)
+        #         sys_to_aud[:,i,j] = w.permute(1,0).squeeze()
 
         sys_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_L)
         for i in range(self.n_M):
@@ -498,8 +412,7 @@ class AA_RIRs(object):
                 w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
-                sys_to_sys[:,i,j] = w.permute(1,0).squeeze()[0:new_rirs_length]
-        # sys_to_sys = sys_to_sys/torch.max(torch.abs(sys_to_sys))
+                sys_to_sys[:,i,j] = w.permute(1,0).squeeze()
 
         rirs = OrderedDict([
             ('src_to_aud', src_to_aud),
@@ -545,167 +458,6 @@ class AA_RIRs(object):
         """
         return self.__RIRs['sys_to_sys']
 
-
-# class MSE_evs(nn.Module):
-#     def __init__(self, iter_num: int, freq_points: int):
-#         r"""
-#         Mean Squared Error (MSE) loss function for Active Acoustics.
-#         To reduce computational complexity (i.e. the number of eigendecompositions computed),
-#         the loss is applied only on a subset of the frequecy points at each iteration of an epoch.
-#         The subset is selected randomly ensuring that all frequency points are considered once and only once.
-
-#             **Args**:
-#                 - iter_num (int): Number of iterations per epoch.
-#                 - freq_points (int): Number of frequency points.
-#         """
-#         super().__init__()
-
-#         self.max_index = freq_points
-
-#         self.iter_num = iter_num
-#         self.idxs = torch.randperm(freq_points)
-#         self.evs_per_iteration = torch.ceil(torch.tensor(freq_points / self.iter_num, dtype=torch.float))
-#         self.interval_count = 0
-
-#     def forward(self, y_pred, y_true):
-#         r"""
-#         Compute the MSE loss function.
-            
-#             **Args**:
-#                 - y_pred (torch.Tensor): Predicted eigenvalues.
-#                 - y_true (torch.Tensor): True eigenvalues.
-
-#             **Returns**:
-#                 torch.Tensor: Mean Squared Error.
-#         """
-#         # Get the indexes of the frequency-point subset
-#         idxs = self.__get_indexes()
-#         # Get the eigenvalues
-#         evs_pred = get_magnitude(get_eigenvalues(y_pred[:,idxs,:,:]))
-#         evs_true = y_true[:,idxs,:]
-#         mse = torch.mean(torch.square(evs_pred - evs_true))
-#         return mse
-
-#     def __get_indexes(self):
-#         r"""
-#         Get the indexes of the frequency-point subset.
-
-#             **Returns**:
-#                 torch.Tensor: Indexes of the frequency-point subset.
-#         """
-#         # Compute indeces
-#         idx1 = np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1])
-#         idx2 = np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index])
-#         idxs = self.idxs[torch.arange(idx1, idx2, dtype=torch.int)]
-#         # Update interval counter
-#         self.interval_count = (self.interval_count+1) % (self.iter_num)
-#         return idxs
-    
-class MSE_evs_mod(nn.Module):
-    def __init__(self, iter_num: int, freq_points: int, samplerate: int, lowest_f: float, crossover_freq: float, highest_f: float):
-        r"""
-        Mean Squared Error (MSE) loss function for Active Acoustics.
-        To reduce computational complexity (i.e. the number of eigendecompositions computed),
-        the loss is applied only on a subset of the frequecy points at each iteration of an epoch.
-        The subset is selected randomly ensuring that all frequency points are considered once and only once.
-
-            **Args**:
-                - iter_num (int): Number of iterations per epoch.
-                - freq_points (int): Number of frequency points.
-        """
-        super().__init__()
-
-        assert(lowest_f >= 0)
-        nyquist = samplerate//2
-        assert(highest_f <= nyquist)
-
-        min_freq_point = int(lowest_f/nyquist * freq_points)
-        max_freq_point = int(highest_f/nyquist * freq_points)
-        crossover_point = int(crossover_freq/nyquist * freq_points)
-
-        ratio = (max_freq_point - min_freq_point) / (crossover_point - min_freq_point)
-        self.freq_points = max_freq_point - min_freq_point
-        self.max_index = self.freq_points
-
-        self.weights = ( torch.sigmoid(torch.linspace(7, -7*ratio, self.freq_points+min_freq_point)) * 4 ) + 1
-
-        self.iter_num = iter_num
-        self.idxs = torch.randperm(self.freq_points) + min_freq_point
-        self.evs_per_iteration = torch.ceil(torch.tensor(self.freq_points / self.iter_num, dtype=torch.float))
-        self.interval_count = 0
-
-    def forward(self, y_pred, y_true):
-        r"""
-        Compute the MSE loss function.
-            
-            **Args**:
-                - y_pred (torch.Tensor): Predicted eigenvalues.
-                - y_true (torch.Tensor): True eigenvalues.
-
-            **Returns**:
-                torch.Tensor: Mean Squared Error.
-        """
-        # Get the indexes of the frequency-point subset
-        idxs = self.__get_indexes()
-        # Get the eigenvalues
-        evs_pred = get_magnitude(get_eigenvalues(y_pred[:,idxs,:,:]))
-        evs_true = y_true[:,idxs,:]
-        difference = evs_pred - evs_true
-        if evs_pred.shape[2] > 4:
-            mask = difference > 0.0
-            difference[mask] = difference[mask] * 3
-            # difference[~mask] = torch.abs(difference[~mask]) # ** 2
-        weights = self.weights[idxs].unsqueeze(0).unsqueeze(-1).repeat(1,1,evs_true.shape[-1])
-        mse = torch.mean(torch.square(torch.abs(difference) * weights))
-        return mse
-
-    def __get_indexes(self):
-        r"""
-        Get the indexes of the frequency-point subset.
-
-            **Returns**:
-                torch.Tensor: Indexes of the frequency-point subset.
-        """
-        # Compute indeces
-        idx1 = np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1])
-        idx2 = np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index])
-        idxs = self.idxs[torch.arange(idx1, idx2, dtype=torch.int)]
-        # Update interval counter
-        self.interval_count = (self.interval_count+1) % (self.iter_num)
-        return idxs
-    
-def save_model_params(model: system.Shell, filename: str='parameters'):
-    r"""
-    Retrieves the parameters from a given model and saves them in .mat format.
-
-        **Parameters**:
-            model (Shell): The Shell class containing the FDN.
-            filename (str): The name of the file to save the parameters without file extension. Defaults to 'parameters'.
-        **Returns**:
-            dict: A dictionary containing the FDN parameters.
-                - 'FIR_matrix' (ndarray): The FIR matrix.
-                - 'WGN_reverb' (ndarray): The WGN reverb.
-                - 'G' (ndarray): The general gain.
-                - 'H_LM' (ndarray): The loudspeakers to microphones RIRs.
-                - 'H_LA' (ndarray): The loudspeakers to audience RIRs.
-                - 'H_SM' (ndarray): The sources to microphones RIRs.
-                - 'H_SA' (ndarray): The sources to audience RIRs.
-    """
-
-    param = {}
-    param['FIR_matrix'] = model.V_ML['U'].param.squeeze().detach().clone().numpy()
-    # param['WGN_reverb'] = model.V_ML['R'].param.squeeze().detach().clone().numpy()
-    param['G'] = model.G.param.squeeze().detach().clone().numpy()
-    param['H_LM'] = model.H_LM.param.squeeze().detach().clone().numpy()
-    param['H_LA'] = model.H_LA.param.squeeze().detach().clone().numpy()
-    param['H_SM'] = model.H_SM.param.squeeze().detach().clone().numpy()
-    param['H_SA'] = model.H_SA.param.squeeze().detach().clone().numpy()
-    
-    scipy.io.savemat(os.path.join(args.train_dir, filename + '.mat'), param)
-
-    return param
-
-
 # ==================================================================================================
 # ============================================ Example =============================================
 
@@ -724,29 +476,19 @@ def example_AA(args) -> None:
 
     # --------------------- Parameters ------------------------
     samplerate = 96000                  # Sampling frequency
-    nfft = samplerate*2                 # FFT size
-
-    stage = 0                           # Number of stage sources
+    nfft = 2**18                        # FFT size
     microphones = 16                    # Number of microphones
-    loudspeakers = 16                   # Number of loudspeakers
-    audience = 0                        # Number of audience receivers
-
-    FIR_order = 2**8                    # FIR filter order
+    loudspeakers = 32                   # Number of loudspeakers
+    FIR_order = 256                     # FIR filter order
     wgn_RT = 1.0                        # Reverberation time of the WGN reverb
     rirs_dir = './rirs/LA-lab'          # Path to the room impulse responses
-    equalized_system = False
-
-    lowest_f = 20                       # Lower frequency limit for the loss function
-    crossover_loss = 9000               # Crossover frequency for the loss function weights (sigmoid)
-    crossover_dataset = 8000            # Crossover frequency for the dataset (limit between flat and descending)
-    highest_f = 16000                   # Upper frequency limit for the loss function
 
     # ------------------- Model Definition --------------------
     model = AA(
-        n_S = stage,
+        n_S = 1,
         n_M = microphones,
         n_L = loudspeakers,
-        n_A = audience,
+        n_A = 1,
         room_name = rirs_dir,
         fs = samplerate,
         nfft = nfft,
@@ -763,60 +505,25 @@ def example_AA(args) -> None:
     model.set_G(db2mag(mag2db(gbi_init) + 0))
     # Performance metrics
     evs_init = model.get_F_MM_eigenvalues().squeeze(0)
-    # ir_init = model.system_simulation().squeeze(0)
 
-    rirs = model.H_LM.param.data
-    rtfs = torch.fft.rfft(rirs, nfft, dim=0)
-    fl_rtfs = model.F_MM.get_freq_response(identity=True).squeeze(0)
-    f_axis = torch.linspace(0, samplerate//2, nfft//2+1)
-    # plot_stuff(samplerate=samplerate, nfft=nfft, rtfs=rtfs, fl_rtfs=fl_rtfs, evs=evs_init)
-    # plot_coupling(rirs)
-
-    # Save the model parameters
-    save_model_params(model, filename='AA_parameters_init')
-
-    # ----------------- Initialize dataset --------------------
-    dataset = DatasetColorless_mod(
-        input_shape = (args.batch_size, nfft//2+1, microphones),
-        target_shape = (args.batch_size, nfft//2+1, microphones),
-        rtfs = evs_init,
-        crossover_freq = crossover_dataset,
-        highest_f = highest_f,
-        nyquist = samplerate/2,
-        equalized_system = equalized_system,
-        expand = args.num,
-        device = args.device
-        )
-    train_loader, valid_loader  = load_dataset(dataset, batch_size=args.batch_size, split=args.split, shuffle=False)
-
-    # ------------- Initialize training process ---------------
-    trainer = Trainer(
-        net=model,
-        max_epochs=args.max_epochs,
-        lr=args.lr,
-        patience_delta=args.patience_delta,
-        train_dir=args.train_dir,
-        device=args.device
-    )
-    criterion = MSE_evs_mod(iter_num=args.num, freq_points=nfft//2+1, samplerate=samplerate, lowest_f=lowest_f, crossover_freq=crossover_loss, highest_f=highest_f)
-    trainer.register_criterion(criterion, 1)
-    
-    # ------------------- Train the model --------------------
-    trainer.train(train_loader, valid_loader)
+    # ---------------- Load optimized FIRs -------------------
+    FIRs_opt, FIRs_fs = torchaudio.load('./test_in_reaper/fir_LA.wav', channels_first=False)
+    new_params = torch.zeros_like(model.V_ML['U'].param.data)
+    for i in range(loudspeakers):
+        for j in range(microphones):
+            temp = FIRs_opt[j*int(FIRs_opt.shape[0]/microphones):(j+1)*int(FIRs_opt.shape[0]/microphones),i]
+            temp = torchaudio.transforms.Resample(FIRs_fs, samplerate)(temp)
+            new_params[:,i,j] = temp
+    model.V_ML['U'].assign_value(new_params)
 
     # ------------ Performance after optimization ------------
-    # Normalize for fair comparison
-    model.normalize_U()
     # Performance metrics
     evs_opt = model.get_F_MM_eigenvalues().squeeze(0)
-    # ir_opt = model.system_simulation().squeeze(0)
-
-    # Save the model parameters
-    save_model_params(model, filename='AA_parameters_optim')
     
     # ------------------------ Plots -------------------------
-    plot_evs_distributions(get_magnitude(evs_init), get_magnitude(evs_opt), samplerate, nfft, lowest_f, highest_f)
-    # plot_spectrograms(ir_init[:,0], ir_opt[:,0], samplerate)
+    plot_evs_distributions(get_magnitude(evs_init), get_magnitude(evs_opt), samplerate, nfft)
+    # plot_spectrograms(ir_init, ir_opt, samplerate)
+    # plt.show(block=True)
 
     f_axis = torch.linspace(0, samplerate//2, nfft//2+1)
     plt.figure()
@@ -826,26 +533,7 @@ def example_AA(args) -> None:
     plt.subplot(212)
     plt.plot(f_axis, mag2db(torch.mean(torch.abs(evs_init), dim=1)))
     plt.plot(f_axis, mag2db(torch.mean(torch.abs(evs_opt), dim=1)))
-
-    virtual_room = system.Shell(model.V_ML)
-    filters = virtual_room.get_time_response(identity=True).squeeze(0)[0:FIR_order,:,:]
-    ftfs = virtual_room.get_freq_response(identity=True).squeeze(0)
-    t_axis = torch.linspace(0, filters.shape[0]/samplerate, filters.shape[0])
-    f_axis = torch.linspace(0, samplerate//2, nfft//2+1)
-    plt.figure()
-    plt.subplot(211)
-    plt.plot(t_axis, filters[:,4,1])
-    plt.plot(t_axis, filters[:,12,3])
-    plt.subplot(212)
-    plt.plot(f_axis, mag2db(torch.abs(ftfs[:,4,1])))
-    plt.plot(f_axis, mag2db(torch.abs(ftfs[:,12,3])))
     plt.show(block=True)
-
-    to_save = torch.zeros((FIR_order*microphones, loudspeakers))
-    for i in range(loudspeakers):
-        for j in range(microphones):
-            to_save[j*FIR_order:(j+1)*FIR_order,i] = filters[:,i,j]
-    torchaudio.save('./fir_LA_noEQ.wav', to_save, channels_first=False, sample_rate=samplerate)
 
     return None
 
@@ -859,7 +547,7 @@ if __name__ == '__main__':
     
     #----------------------- Dataset ----------------------
     parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
-    parser.add_argument('--num', type=int, default=2**5,help = 'dataset size')
+    parser.add_argument('--num', type=int, default=2**8,help = 'dataset size')
     parser.add_argument('--device', type=str, default='cpu', help='device to use for computation')
     parser.add_argument('--split', type=float, default=0.8, help='split ratio for training and validation')
     #---------------------- Training ----------------------

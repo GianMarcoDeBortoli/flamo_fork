@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.utils.data as data
 from flamo.utils import get_device
@@ -64,7 +65,59 @@ class DatasetColorless(Dataset):
         super().__init__(input=input, target=target, expand=expand, device=device)
 
     def __getitem__(self, index):
-        return self.input[index], self.target[index]    
+        return self.input[index], self.target[index]  
+
+class DatasetColorless_mod(Dataset):
+    r"""
+    A dataset class for colorless optimization. Inherits from :class:`Dataset`.
+    The input tensor is an impulse of length :attr:`input_shape`.
+    The target is an instance of torch.ones with the shape :attr:`target_shape`, 
+    corresponding to a flat magnitude spectrum.
+
+        **Args**:
+            input_shape (tuple): The shape of the input data.
+            target_shape (tuple): The shape of the target data.
+            expand (int, optional): The number of times to expand the dataset. Defaults to 1000.
+            device (str, optional): The device to use for computation. Defaults to 'cpu'.
+
+        **Attributes**:
+            input (torch.Tensor): The input impulse tensor.
+            target (torch.Tensor): The spectrally flat target tensor.
+    
+    For details on the colorless optimization, see `<https://arxiv.org/abs/2402.11216v2>`_.
+    """
+
+    def __init__(self, input_shape, target_shape, rtfs, crossover_freq, highest_f, nyquist, equalized_system: bool, expand=1000, device='cpu'):
+        assert(rtfs.shape[0] == target_shape[1])
+        input = torch.zeros(input_shape)
+        input[:,0,:] = 1
+        crossover_index = int(crossover_freq/nyquist * target_shape[1])
+        highest_f_lim = int(highest_f/nyquist * target_shape[1])
+        target = self.design_target(rtfs, crossover_index, highest_f_lim, target_shape, equalized_system)
+        super().__init__(input=input, target=target, expand=expand, device=device)
+
+    def __getitem__(self, index):
+        return self.input[index], self.target[index]
+
+    def design_target(self, rtfs, crossover_index, highest_f_lim, target_shape, equalized_system):
+        rtfs_mean = torch.mean(torch.abs(rtfs), dim=(1))
+        samples_after_crossover = rtfs_mean.shape[0] - crossover_index
+        mov_avg_win = samples_after_crossover//6
+        mov_avg = torch.tensor(np.convolve(rtfs_mean[crossover_index:], np.ones(mov_avg_win)/mov_avg_win, mode='valid'))
+        mov_avg = (mov_avg[:highest_f_lim-crossover_index] / torch.max(mov_avg)).unsqueeze(1)
+        flat_part = torch.ones(crossover_index,1)
+        target = torch.cat((flat_part, mov_avg),dim=0)
+        pre = torch.ones(mov_avg_win//2, 1) * target[0]
+        post = torch.ones(mov_avg_win//2,1) * target[-1]
+        target = torch.cat((pre, target, post), dim=0)
+        target = torch.tensor(np.convolve(target.squeeze(), np.ones(mov_avg_win)/mov_avg_win, mode='valid')).unsqueeze(-1)
+        if equalized_system:
+            scaling_factor = torch.max(rtfs_mean[0:crossover_index])
+        else:
+            scaling_factor = torch.mean(rtfs_mean[0:crossover_index])
+        target = torch.cat((target * scaling_factor, torch.zeros(target_shape[1]-target.shape[0],1)), dim=0)
+        target_final = target.unsqueeze(0).repeat(target_shape[0],1,target_shape[2])
+        return target_final
 
 # ============================= UTILS ================================
 

@@ -27,7 +27,8 @@ def get_eigenvalues(x: torch.Tensor):
         **Returns**:
             torch.tensor: The eigenvalues of x.
     """
-    assert(x.shape[-1] == x.shape[-2])
+    if len(x.shape) >3:
+        assert(x.shape[-1] == x.shape[-2])
     if x.shape[-1] == 1:
         return x
     

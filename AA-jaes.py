@@ -33,7 +33,7 @@ class AA_jaes(nn.Module):
         De Bortoli G., Prawda K., and Schlecht S. J.
         Active Acoustics with a Phase Cancelling Modal Reverberator
     """
-    def __init__(self, n_S: int, n_M: int, n_L: int, n_A: int, n_modes: int, lowest_mode_f: float, highest_mode_f: float, mode_t60: float, fs: int=48000, nfft: int=2**11, alias_decay_db: float=0):
+    def __init__(self, n_S: int, n_M: int, n_L: int, n_A: int, room_name: str, n_modes: int, lowest_mode_f: float, highest_mode_f: float, mode_t60: float, fs: int=48000, nfft: int=2**11, alias_decay_db: float=0):
         r"""
         Initialize the Active Acoustics (AA) model.
         Stores system parameters, RIRs, and filters.
@@ -64,7 +64,7 @@ class AA_jaes(nn.Module):
         self.n_A = n_A
 
         # Physical room
-        self.__Room = AA_RIRs(dir='./rirs/Otala-2024.05.10', n_S=self.n_S, n_L=self.n_L, n_M=self.n_M, n_A=self.n_A, fs=self.fs)
+        self.__Room = AA_RIRs(dir=room_name, n_S=self.n_S, n_L=self.n_L, n_M=self.n_M, n_A=self.n_A, fs=self.fs)
         self.H_SM = dsp.Filter(size=(self.__Room.RIR_length, n_M, n_S), nfft=self.nfft, alias_decay_db=alias_decay_db)
         self.H_SM.assign_value(self.__Room.get_scs_to_mcs())
         self.H_SA = dsp.Filter(size=(self.__Room.RIR_length, n_A, n_S), nfft=self.nfft, alias_decay_db=alias_decay_db)
@@ -247,7 +247,7 @@ class AA_jaes(nn.Module):
 
 # ============================================== Plots =============================================
 
-def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nfft: int, label1: str='Initialized', label2: str='Optimized') -> None:
+def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nfft: int, lower_f_lim: float, higher_f_lim: float, label1: str='Initialized', label2: str='Optimized') -> None:
     r"""
     Plot the magnitude distribution of the given eigenvalues.
 
@@ -259,8 +259,8 @@ def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nf
             label1 (str, optional): Label for the first set of eigenvalues. Defaults to 'Initialized'.
             label2 (str, optional): Label for the second set of eigenvalues. Defaults to 'Optimized'.
     """
-    idx1 = int(nfft/fs * 20)
-    idx2 = int(nfft/fs * 20000)
+    idx1 = int(nfft/fs * lower_f_lim)
+    idx2 = int(nfft/fs * higher_f_lim)
     evs = mag2db(torch.cat((evs_1.unsqueeze(-1), evs_2.unsqueeze(-1)), dim=len(evs_1.shape))[idx1:idx2,:,:])
     plt.rcParams.update({'font.family':'serif', 'font.size':20, 'font.weight':'heavy', 'text.usetex':True})
     plt.figure(figsize=(7,6))
@@ -275,7 +275,7 @@ def plot_evs_distributions(evs_1: torch.Tensor, evs_2: torch.Tensor, fs: int, nf
     plt.xticks([0,1], [label1, label2])
     plt.xticks(rotation=90)
     ax.yaxis.grid(True)
-    plt.title('Eigenvalue Magnitude Distribution')
+    plt.title(f'Eigenvalue Magnitude Distribution\nbetween {lower_f_lim} Hz and {higher_f_lim} Hz')
     plt.tight_layout()
 
 def plot_spectrograms(y_1: torch.Tensor, y_2: torch.Tensor, fs: int, nfft: int=2**10, label1='Initialized', label2='Optimized', title='System Impulse Response Spectrograms') -> None:
@@ -343,10 +343,10 @@ class AA_RIRs(object):
                 - fs (int): Sample rate [Hz].
         """
         object.__init__(self)
-        assert n_S == 1, "Only one source is supported."
-        assert n_L <= 13, "Only up to 13 loudspeakers are supported."
-        assert n_M <= 4, "Only up to 4 microphones are supported."
-        assert n_A == 1, "Only one audience member is supported."
+        # assert n_S == 1, "Only one source is supported."
+        # assert n_L <= 13, "Only up to 13 loudspeakers are supported."
+        # assert n_M <= 4, "Only up to 4 microphones are supported."
+        # assert n_A == 1, "Only one audience member is supported."
         
         self.n_S = n_S
         self.n_L = n_L
@@ -364,14 +364,14 @@ class AA_RIRs(object):
                 torch.Tensor: RIRs. dtype=torch.float32, shape = (RIRs_length, n_M, n_L).
         """
 
-        rirs_length = 24000 # Read this from dataset
-        sr = 48000          # Read this from dataset
+        rirs_length = 288000 # Read this from dataset
+        sr = 96000          # Read this from dataset
         new_rirs_length = int(self.fs * rirs_length/sr) # I should infer this from the resample
 
         src_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_S)
         for i in range(self.n_A):
             for j in range(self.n_S):
-                w = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/StageAudience/R{i+1:03d}_S{j+1:03d}.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
                 src_to_aud[:,i,j] = w.permute(1,0).squeeze()
@@ -379,7 +379,7 @@ class AA_RIRs(object):
         src_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_S)
         for i in range(self.n_M):
             for j in range(self.n_S):
-                w = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/StageSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
                 src_to_sys[:,i,j] = w.permute(1,0).squeeze()
@@ -387,7 +387,7 @@ class AA_RIRs(object):
         sys_to_aud = torch.zeros(new_rirs_length, self.n_A, self.n_L)
         for i in range(self.n_A):
             for j in range(self.n_L):
-                w = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/SystemAudience/R{i+1:03d}_S{j+1:03d}.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
                 sys_to_aud[:,i,j] = w.permute(1,0).squeeze()
@@ -395,10 +395,11 @@ class AA_RIRs(object):
         sys_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_L)
         for i in range(self.n_M):
             for j in range(self.n_L):
-                w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_E{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
-                sys_to_sys[:,i,j] = w.permute(1,0).squeeze()
+                sys_to_sys[:,i,j] = w.permute(1,0).squeeze()[0:new_rirs_length]
+        # sys_to_sys = sys_to_sys/torch.max(torch.abs(sys_to_sys))
 
         rirs = OrderedDict([
             ('src_to_aud', src_to_aud),
@@ -406,7 +407,6 @@ class AA_RIRs(object):
             ('sys_to_aud', sys_to_aud),
             ('sys_to_sys', sys_to_sys)
         ])
-
         return rirs, new_rirs_length
     
     def get_scs_to_aud(self) -> torch.Tensor:
@@ -531,7 +531,7 @@ class minimize_evs_mod(nn.Module):
         """
         # Get the eigenvalues
         evs_pred = get_magnitude(get_eigenvalues(y_pred[:,self.idxs,:,:]))
-        mse = torch.mean(torch.square(evs_pred))
+        mse = torch.mean(torch.square(evs_pred * 10))
         return mse
 
 # class preserve_reverb_energy(nn.Module):
@@ -600,32 +600,38 @@ def example_AA(args) -> None:
 
     # --------------------- Parameters ------------------------
     samplerate = 1000                  # Sampling frequency
-    nfft = 2**11                       # FFT size
-    microphones = 4                    # Number of microphones
-    loudspeakers = 13                  # Number of loudspeakers
-    MR_n_modes = 150                   # Modal reverb number of modes
-    MR_f_low = 50                      # Modal reverb lowest mode frequency
+    nfft = samplerate*2                       # FFT size
+
+    stage = 0
+    microphones = 16                    # Number of microphones
+    loudspeakers = 16                  # Number of loudspeakers
+    audience = 0
+    rirs_dir = './rirs/LA-lab'          # Path to the room impulse responses
+
+    MR_n_modes = 160                   # Modal reverb number of modes
+    MR_f_low = 40                      # Modal reverb lowest mode frequency
     MR_f_high = 480                    # Modal reverb highest mode frequency
     MR_t60 = 1.0                       # Modal reverb reverberation time
 
     f_axis = torch.linspace(0, samplerate/2, nfft//2+1)
     MR_freqs = torch.linspace(MR_f_low, MR_f_high, MR_n_modes)
     idxs = torch.argmin(torch.abs(f_axis.unsqueeze(1) - MR_freqs.unsqueeze(0)), dim=0)
-    idxs = torch.cat((idxs-1, idxs, idxs+1), dim = 0)
+    idxs = torch.cat((idxs-2, idxs-1, idxs, idxs+1, idxs+2), dim = 0)
 
     # ------------------- Model Definition --------------------
     model = AA_jaes(
-        n_S = 1,
+        n_S = stage,
         n_M = microphones,
         n_L = loudspeakers,
-        n_A = 1,
+        n_A = audience,
+        room_name = rirs_dir,
         n_modes = MR_n_modes,
         lowest_mode_f = MR_f_low,
         highest_mode_f = MR_f_high,
         mode_t60 = MR_t60,
         fs = samplerate,
         nfft = nfft,
-        alias_decay_db=0
+        alias_decay_db=-30
     )
     
     # ------------- Performance at initialization -------------
@@ -634,7 +640,7 @@ def example_AA(args) -> None:
     model.set_G(db2mag(mag2db(gbi_init) + 0))
     # Performance metrics
     evs_init = model.get_F_MM_eigenvalues().squeeze(0)
-    ir_init = model.system_simulation().squeeze(0)
+    # ir_init = model.system_simulation().squeeze(0)
 
     # Save the model parameters
     # save_model_params(model, filename='AA_parameters_init')
@@ -658,7 +664,7 @@ def example_AA(args) -> None:
         device=args.device
     )
     trainer.register_criterion(minimize_evs_mod(iter_num=args.num, idxs=idxs), 1.5)
-    trainer.register_criterion(preserve_reverb_energy_mod(idxs), 1.0, requires_model=True)
+    trainer.register_criterion(preserve_reverb_energy_mod(idxs), 0.5, requires_model=True)
     
     # ------------------- Train the model --------------------
     trainer.train(train_loader, valid_loader)
@@ -666,14 +672,23 @@ def example_AA(args) -> None:
     # ------------ Performance after optimization ------------
     # Performance metrics
     evs_opt = model.get_F_MM_eigenvalues().squeeze(0)
-    ir_opt = model.system_simulation().squeeze(0)
+    # ir_opt = model.system_simulation().squeeze(0)
 
     # Save the model parameters
     # save_model_params(model, filename='AA_parameters_optim')
     
     # ------------------------ Plots -------------------------
-    plot_evs_distributions(get_magnitude(evs_init), get_magnitude(evs_opt), samplerate, nfft)
-    plot_spectrograms(ir_init, ir_opt, samplerate, nfft=2**4)
+    plot_evs_distributions(get_magnitude(evs_init), get_magnitude(evs_opt), samplerate, nfft, MR_f_low, MR_f_high)
+    # plot_spectrograms(ir_init, ir_opt, samplerate, nfft=2**4)
+
+    f_axis = torch.linspace(0, samplerate//2, nfft//2+1)
+    plt.figure()
+    plt.subplot(211)
+    plt.plot(f_axis, mag2db(torch.max(torch.abs(evs_init), dim=1)[0]))
+    plt.plot(f_axis, mag2db(torch.max(torch.abs(evs_opt), dim=1)[0]))
+    plt.subplot(212)
+    plt.plot(f_axis, mag2db(torch.mean(torch.abs(evs_init), dim=1)))
+    plt.plot(f_axis, mag2db(torch.mean(torch.abs(evs_opt), dim=1)))
 
     MR = system.Shell(core=model.V_ML['MR'])
     rirs = MR.get_time_response(fs=samplerate, identity=True)
@@ -691,7 +706,7 @@ def example_AA(args) -> None:
             plt.subplot(2,2,2*i+j+1)
             plt.plot(20*torch.log10(torch.abs(frs[0,:,i,j])))
 
-    plt.show()
+    plt.show(block=True)
 
     test = system.Shell(model.V_ML)
     irs = test.get_time_response(identity=True).squeeze(0)
@@ -724,13 +739,13 @@ if __name__ == '__main__':
     
     #----------------------- Dataset ----------------------
     parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
-    parser.add_argument('--num', type=int, default=2**8,help = 'dataset size')
+    parser.add_argument('--num', type=int, default=2**6,help = 'dataset size')
     parser.add_argument('--device', type=str, default='cpu', help='device to use for computation')
     parser.add_argument('--split', type=float, default=0.8, help='split ratio for training and validation')
     #---------------------- Training ----------------------
     parser.add_argument('--train_dir', type=str, help='directory to save training results')
     parser.add_argument('--max_epochs', type=int, default=20, help='maximum number of epochs')
-    parser.add_argument('--patience_delta', type=float, default=0.01, help='Minimum improvement in validation loss to be considered as an improvement')
+    parser.add_argument('--patience_delta', type=float, default=0.05, help='Minimum improvement in validation loss to be considered as an improvement')
     #---------------------- Optimizer ---------------------
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     #----------------- Parse the arguments ----------------
