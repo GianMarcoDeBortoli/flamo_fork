@@ -395,7 +395,7 @@ class AA_RIRs(object):
         sys_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_L)
         for i in range(self.n_M):
             for j in range(self.n_L):
-                w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/SystemSystem/E{j+1:03d}_R{i+1:03d}_M01.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
                 sys_to_sys[:,i,j] = w.permute(1,0).squeeze()[0:new_rirs_length]
@@ -611,7 +611,7 @@ def example_AA(args) -> None:
     MR_n_modes = 160                   # Modal reverb number of modes
     MR_f_low = 40                      # Modal reverb lowest mode frequency
     MR_f_high = 480                    # Modal reverb highest mode frequency
-    MR_t60 = 1.0                       # Modal reverb reverberation time
+    MR_t60 = 0.5                       # Modal reverb reverberation time
 
     f_axis = torch.linspace(0, samplerate/2, nfft//2+1)
     MR_freqs = torch.linspace(MR_f_low, MR_f_high, MR_n_modes)
@@ -719,10 +719,11 @@ def example_AA(args) -> None:
             irs_temp[:,i,j] = torchaudio.transforms.Resample(samplerate, 48000)(irs[:,i,j].squeeze().unsqueeze(0))
     new_irs_length = next_power_of_2(irs_length)
     irs_final = torch.cat((irs_temp, torch.zeros(new_irs_length-irs_length, irs_temp.shape[1], irs_temp.shape[2])), dim=0)
+    # Normalize
     to_save = torch.zeros(irs_final.shape[0]*irs_final.shape[2], irs_final.shape[1])
     for i in range(irs_final.shape[2]):
         to_save[i*irs_final.shape[0]:(i+1)*irs_final.shape[0],:] = irs_final[:,:,i]
-    torchaudio.save('./modalReverb.wav', to_save, channels_first=False, sample_rate=samplerate)
+    torchaudio.save('./modalReverb.wav', to_save, channels_first=False, sample_rate=48000)
 
     return None
 
@@ -745,7 +746,7 @@ if __name__ == '__main__':
     #---------------------- Training ----------------------
     parser.add_argument('--train_dir', type=str, help='directory to save training results')
     parser.add_argument('--max_epochs', type=int, default=20, help='maximum number of epochs')
-    parser.add_argument('--patience_delta', type=float, default=0.05, help='Minimum improvement in validation loss to be considered as an improvement')
+    parser.add_argument('--patience_delta', type=float, default=0.01, help='Minimum improvement in validation loss to be considered as an improvement')
     #---------------------- Optimizer ---------------------
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     #----------------- Parse the arguments ----------------

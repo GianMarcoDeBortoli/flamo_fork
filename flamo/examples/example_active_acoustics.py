@@ -65,19 +65,19 @@ class AA(nn.Module):
 
         # Physical room
         self.__Room = AA_RIRs(dir=room_name, n_S=self.n_S, n_L=self.n_L, n_M=self.n_M, n_A=self.n_A, fs=self.fs)
-        self.H_SM = dsp.Filter(size=(self.__Room.RIR_length, n_M, n_S), nfft=self.nfft, alias_decay_db=alias_decay_db)
+        self.H_SM = dsp.Filter(size=(self.__Room.RIR_length, n_M, n_S), nfft=self.nfft, requires_grad=False, alias_decay_db=alias_decay_db)
         self.H_SM.assign_value(self.__Room.get_scs_to_mcs())
-        self.H_SA = dsp.Filter(size=(self.__Room.RIR_length, n_A, n_S), nfft=self.nfft, alias_decay_db=alias_decay_db)
+        self.H_SA = dsp.Filter(size=(self.__Room.RIR_length, n_A, n_S), nfft=self.nfft, requires_grad=False, alias_decay_db=alias_decay_db)
         self.H_SA.assign_value(self.__Room.get_scs_to_aud())
-        self.H_LM = dsp.Filter(size=(self.__Room.RIR_length, n_M, n_L), nfft=self.nfft, alias_decay_db=alias_decay_db)
+        self.H_LM = dsp.Filter(size=(self.__Room.RIR_length, n_M, n_L), nfft=self.nfft, requires_grad=False, alias_decay_db=alias_decay_db)
         self.H_LM.assign_value(self.__Room.get_lds_to_mcs())
-        self.H_LA = dsp.Filter(size=(self.__Room.RIR_length, n_A, n_L), nfft=self.nfft, alias_decay_db=alias_decay_db)
+        self.H_LA = dsp.Filter(size=(self.__Room.RIR_length, n_A, n_L), nfft=self.nfft, requires_grad=False, alias_decay_db=alias_decay_db)
         self.H_LA.assign_value(self.__Room.get_lds_to_aud())
 
         # Virtual room
         self.G = dsp.parallelGain(size=(self.n_L,), nfft=self.nfft, alias_decay_db=alias_decay_db)
         self.G.assign_value(torch.ones(self.n_L))
-        fir_matrix = dsp.Filter(size=(FIR_order, self.n_L, self.n_M), nfft=self.nfft, requires_grad=True, alias_decay_db=alias_decay_db)
+        fir_matrix = dsp.Filter(size=(FIR_order, self.n_L, self.n_M), nfft=self.nfft, requires_grad=True, alias_decay_db=alias_decay_db) # map=lambda x: x/torch.norm(x, 'fro'),
         # wgn_rev = WGN_reverb(matrix_size=(self.n_L,), t60=wgn_RT, samplerate=self.fs)
         # wgn_matrix = dsp.parallelFilter(size=wgn_rev.shape, nfft=self.nfft, alias_decay_db=alias_decay_db)
         # wgn_matrix.assign_value(wgn_rev)
@@ -495,11 +495,10 @@ class AA_RIRs(object):
         sys_to_sys = torch.zeros(new_rirs_length, self.n_M, self.n_L)
         for i in range(self.n_M):
             for j in range(self.n_L):
-                w = torchaudio.load(f"{self.dir}/SystemSystem/R{i+1:03d}_S{j+1:03d}.wav")[0]
+                w = torchaudio.load(f"{self.dir}/SystemSystem/E{j+1:03d}_R{i+1:03d}_M03.wav")[0]
                 if self.fs != sr:
                     w = torchaudio.transforms.Resample(sr, self.fs)(w)
                 sys_to_sys[:,i,j] = w.permute(1,0).squeeze()[0:new_rirs_length]
-        # sys_to_sys = sys_to_sys/torch.max(torch.abs(sys_to_sys))
 
         rirs = OrderedDict([
             ('src_to_aud', src_to_aud),
@@ -674,6 +673,80 @@ class MSE_evs_mod(nn.Module):
         self.interval_count = (self.interval_count+1) % (self.iter_num)
         return idxs
     
+class minimize_evs(nn.Module):
+    def __init__(self, iter_num: int, freq_points: int, samplerate: int, lowest_f: float, crossover_freq: float, highest_f: float):
+        r"""
+        Mean Squared Error (MSE) loss function for Active Acoustics.
+        To reduce computational complexity (i.e. the number of eigendecompositions computed),
+        the loss is applied only on a subset of the frequecy points at each iteration of an epoch.
+        The subset is selected randomly ensuring that all frequency points are considered once and only once.
+
+            **Args**:
+                - iter_num (int): Number of iterations per epoch.
+                - freq_points (int): Number of frequency points.
+        """
+        super().__init__()
+
+        assert(lowest_f >= 0)
+        nyquist = samplerate//2
+        assert(highest_f <= nyquist)
+
+        min_freq_point = int(lowest_f/nyquist * freq_points)
+        max_freq_point = int(highest_f/nyquist * freq_points)
+        crossover_point = int(crossover_freq/nyquist * freq_points)
+
+        ratio = (max_freq_point - min_freq_point) / (crossover_point - min_freq_point)
+        self.freq_points = max_freq_point - min_freq_point
+        self.max_index = self.freq_points
+
+        self.weights = ( torch.sigmoid(torch.linspace(7, -7*ratio, self.freq_points+min_freq_point)) * 4 ) + 1
+
+        self.iter_num = iter_num
+        self.idxs = torch.randperm(self.freq_points) + min_freq_point
+        self.evs_per_iteration = torch.ceil(torch.tensor(self.freq_points / self.iter_num, dtype=torch.float))
+        self.interval_count = 0
+
+    def forward(self, y_pred, y_true):
+        r"""
+        Compute the MSE loss function.
+            
+            **Args**:
+                - y_pred (torch.Tensor): Predicted eigenvalues.
+                - y_true (torch.Tensor): True eigenvalues.
+
+            **Returns**:
+                torch.Tensor: Mean Squared Error.
+        """
+        # Get the indexes of the frequency-point subset
+        idxs = self.__get_indexes()
+        # Get the eigenvalues
+        evs_pred = get_magnitude(get_eigenvalues(y_pred[:,idxs,:,:]))
+        mse = torch.mean(torch.square(torch.abs(evs_pred)))
+        return mse
+
+    def __get_indexes(self):
+        r"""
+        Get the indexes of the frequency-point subset.
+
+            **Returns**:
+                torch.Tensor: Indexes of the frequency-point subset.
+        """
+        # Compute indeces
+        idx1 = np.min([int(self.interval_count*self.evs_per_iteration), self.max_index-1])
+        idx2 = np.min([int((self.interval_count+1) * self.evs_per_iteration), self.max_index])
+        idxs = self.idxs[torch.arange(idx1, idx2, dtype=torch.int)]
+        # Update interval counter
+        self.interval_count = (self.interval_count+1) % (self.iter_num)
+        return idxs
+    
+class preserve_reverb_energy_mod(nn.Module):
+    def __init__(self, idxs):
+        super().__init__()
+        self.idxs = idxs
+    def forward(self, y_pred, y_target, model):
+        freq_response = model.F_MM._Shell__core.U.freq_response
+        return torch.mean(torch.pow(torch.abs(freq_response[self.idxs])-torch.abs(y_target.squeeze()[self.idxs].unsqueeze(2).repeat(1,1,16)), 2))
+    
 def save_model_params(model: system.Shell, filename: str='parameters'):
     r"""
     Retrieves the parameters from a given model and saves them in .mat format.
@@ -728,18 +801,18 @@ def example_AA(args) -> None:
 
     stage = 0                           # Number of stage sources
     microphones = 16                    # Number of microphones
-    loudspeakers = 16                   # Number of loudspeakers
+    loudspeakers = 32                   # Number of loudspeakers
     audience = 0                        # Number of audience receivers
 
     FIR_order = 2**8                    # FIR filter order
-    wgn_RT = 1.0                        # Reverberation time of the WGN reverb
     rirs_dir = './rirs/LA-lab'          # Path to the room impulse responses
     equalized_system = False
 
     lowest_f = 20                       # Lower frequency limit for the loss function
-    crossover_loss = 9000               # Crossover frequency for the loss function weights (sigmoid)
-    crossover_dataset = 8000            # Crossover frequency for the dataset (limit between flat and descending)
+    crossover_loss = 500               # Crossover frequency for the loss function weights (sigmoid)
+    crossover_dataset = 8000            # Crossover frequency for the target (limit between flat and evs-like)
     highest_f = 16000                   # Upper frequency limit for the loss function
+    
 
     # ------------------- Model Definition --------------------
     model = AA(
@@ -751,8 +824,8 @@ def example_AA(args) -> None:
         fs = samplerate,
         nfft = nfft,
         FIR_order = FIR_order,
-        wgn_RT = wgn_RT,
-        alias_decay_db=-30
+        wgn_RT = None,
+        alias_decay_db=0
     )
     
     # ------------- Performance at initialization -------------
@@ -787,7 +860,7 @@ def example_AA(args) -> None:
         expand = args.num,
         device = args.device
         )
-    train_loader, valid_loader  = load_dataset(dataset, batch_size=args.batch_size, split=args.split, shuffle=False)
+    train_loader, valid_loader = load_dataset(dataset, batch_size=args.batch_size, split=args.split, shuffle=False)
 
     # ------------- Initialize training process ---------------
     trainer = Trainer(
@@ -798,6 +871,10 @@ def example_AA(args) -> None:
         train_dir=args.train_dir,
         device=args.device
     )
+    # criterion1 = minimize_evs(iter_num=args.num, freq_points=nfft//2+1, samplerate=samplerate, lowest_f=lowest_f, crossover_freq=crossover_loss, highest_f=highest_f)
+    # trainer.register_criterion(criterion1, 1)
+    # criterion2 = preserve_reverb_energy_mod(idxs=torch.arange(0, nfft//2+1))
+    # trainer.register_criterion(criterion2, 1, requires_model=True)
     criterion = MSE_evs_mod(iter_num=args.num, freq_points=nfft//2+1, samplerate=samplerate, lowest_f=lowest_f, crossover_freq=crossover_loss, highest_f=highest_f)
     trainer.register_criterion(criterion, 1)
     
@@ -845,10 +922,9 @@ def example_AA(args) -> None:
     for i in range(loudspeakers):
         for j in range(microphones):
             to_save[j*FIR_order:(j+1)*FIR_order,i] = filters[:,i,j]
-    torchaudio.save('./fir_LA_noEQ.wav', to_save, channels_first=False, sample_rate=samplerate)
+    torchaudio.save('./test_in_reaper/fir_LA_noEQ_16-16_parallel.wav', to_save, channels_first=False, sample_rate=samplerate)
 
     return None
-
 
 ###########################################################################################
 
@@ -860,8 +936,8 @@ if __name__ == '__main__':
     #----------------------- Dataset ----------------------
     parser.add_argument('--batch_size', type=int, default=1, help='batch size for training')
     parser.add_argument('--num', type=int, default=2**5,help = 'dataset size')
-    parser.add_argument('--device', type=str, default='cpu', help='device to use for computation')
-    parser.add_argument('--split', type=float, default=0.8, help='split ratio for training and validation')
+    parser.add_argument('--device', type=str, default='cpu', help='device to use for computation') # try msp
+    parser.add_argument('--split', type=float, default=0.9, help='split ratio for training and validation')
     #---------------------- Training ----------------------
     parser.add_argument('--train_dir', type=str, help='directory to save training results')
     parser.add_argument('--max_epochs', type=int, default=10, help='maximum number of epochs')
@@ -879,7 +955,7 @@ if __name__ == '__main__':
         args.train_dir = os.path.join('output', time.strftime("%Y%m%d-%H%M%S"))
         os.makedirs(args.train_dir)
 
-    # save arguments 
+    # save arguments
     with open(os.path.join(args.train_dir, 'args.txt'), 'w') as f:
         f.write('\n'.join([str(k) + ',' + str(v) for k, v in sorted(vars(args).items(), key=lambda x: x[0])]))
 
